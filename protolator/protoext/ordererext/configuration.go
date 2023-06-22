@@ -15,6 +15,8 @@ import (
 	"github.com/hyperledger/fabric-protos-go/msp"
 	"github.com/hyperledger/fabric-protos-go/orderer"
 	"github.com/hyperledger/fabric-protos-go/orderer/etcdraft"
+
+	"github.com/BDLS-bft/fabric-protos-go/orderer/bdls"
 )
 
 type DynamicOrdererGroup struct {
@@ -80,6 +82,8 @@ func (ct *ConsensusType) VariablyOpaqueFieldProto(name string) (proto.Message, e
 	switch ct.Type {
 	case "etcdraft":
 		return &etcdraft.ConfigMetadata{}, nil
+	case "bdls":
+		return &bdls.ConfigMetadata{}, nil
 	default:
 		return &empty.Empty{}, nil
 	}

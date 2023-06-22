@@ -27,6 +27,9 @@ const (
 	// ConsensusTypeEtcdRaft identifies the Raft-based consensus implementation.
 	ConsensusTypeEtcdRaft = "etcdraft"
 
+	// ConsensusTypeBdls identifies the Bdls-based consensus implementation.
+	ConsensusTypeBdls = "bdls"
+
 	// KafkaBrokersKey is the common.ConfigValue type key name for the KafkaBrokers message.
 	KafkaBrokersKey = "KafkaBrokers"
 
@@ -41,6 +44,8 @@ const (
 
 	// ChannelRestrictionsKey is the key name for the ChannelRestrictions message.
 	ChannelRestrictionsKey = "ChannelRestrictions"
+
+
 )
 
 // ConsensusState defines the orderer mode of operation.
@@ -71,6 +76,13 @@ type EtcdRaft struct {
 	Options    EtcdRaftOptions
 }
 
+type Bdls struct {
+	Consenters []Consenter
+	Options    BdlsOptions
+}
+
+
+
 // EtcdRaftOptions to be specified for all the etcd/raft nodes.
 // These can be modified on a per-channel basis.
 type EtcdRaftOptions struct {
@@ -80,6 +92,11 @@ type EtcdRaftOptions struct {
 	MaxInflightBlocks uint32
 	// Take snapshot when cumulative data exceeds certain size in bytes.
 	SnapshotIntervalSize uint32
+}
+
+
+type BdlsOptions struct {
+	CurrentHeight      uint32
 }
 
 // Consenter represents a consenting node (i.e. replica).

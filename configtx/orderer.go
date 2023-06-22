@@ -20,6 +20,8 @@ import (
 	cb "github.com/hyperledger/fabric-protos-go/common"
 	ob "github.com/hyperledger/fabric-protos-go/orderer"
 	eb "github.com/hyperledger/fabric-protos-go/orderer/etcdraft"
+
+	bb "github.com/BDLS-bft/fabric-protos-go/orderer/bdls"
 )
 
 const (
@@ -37,6 +39,7 @@ type Orderer struct {
 	BatchSize     orderer.BatchSize
 	Kafka         orderer.Kafka
 	EtcdRaft      orderer.EtcdRaft
+	Bdls      	  orderer.Bdls
 	Organizations []Organization
 	// MaxChannels is the maximum count of channels an orderer supports.
 	MaxChannels uint64
