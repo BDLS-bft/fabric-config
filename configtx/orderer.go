@@ -39,7 +39,7 @@ type Orderer struct {
 	BatchSize     orderer.BatchSize
 	Kafka         orderer.Kafka
 	EtcdRaft      orderer.EtcdRaft
-	Bdls      	  orderer.Bdls
+	Bdls          orderer.Bdls
 	Organizations []Organization
 	// MaxChannels is the maximum count of channels an orderer supports.
 	MaxChannels uint64
@@ -982,6 +982,57 @@ func marshalEtcdRaftMetadata(md orderer.EtcdRaft) ([]byte, error) {
 	return data, nil
 }
 
+// marshalBdlsMetadata serializes Bdls metadata.
+func marshalBdlsMetadata(md orderer.Bdls) ([]byte, error) {
+	var consenters []*bb.Consenter
+
+	if len(md.Consenters) == 0 {
+		return nil, errors.New("consenters are required")
+	}
+
+	for _, c := range md.Consenters {
+		host := c.Address.Host
+		port := c.Address.Port
+
+		if c.ClientTLSCert == nil {
+			return nil, fmt.Errorf("client tls cert for consenter %s:%d is required", host, port)
+		}
+
+		if c.ServerTLSCert == nil {
+			return nil, fmt.Errorf("server tls cert for consenter %s:%d is required", host, port)
+		}
+
+		consenter := &bb.Consenter{
+			Host: host,
+			Port: uint32(port),
+			ClientTlsCert: pem.EncodeToMemory(&pem.Block{
+				Type:  "CERTIFICATE",
+				Bytes: c.ClientTLSCert.Raw,
+			}),
+			ServerTlsCert: pem.EncodeToMemory(&pem.Block{
+				Type:  "CERTIFICATE",
+				Bytes: c.ServerTLSCert.Raw,
+			}),
+		}
+
+		consenters = append(consenters, consenter)
+	}
+
+	configMetadata := &bb.ConfigMetadata{
+		Consenters: consenters,
+		Options: &bb.Options{
+			CurrentHeight: uint64(md.Options.CurrentHeight),
+		},
+	}
+
+	data, err := proto.Marshal(configMetadata)
+	if err != nil {
+		return nil, fmt.Errorf("marshaling config metadata: %v", err)
+	}
+
+	return data, nil
+}
+
 // unmarshalEtcdRaftMetadata deserializes etcd RAFT metadata.
 func unmarshalEtcdRaftMetadata(mdBytes []byte) (orderer.EtcdRaft, error) {
 	etcdRaftMetadata := &eb.ConfigMetadata{}
@@ -1034,6 +1085,58 @@ func unmarshalEtcdRaftMetadata(mdBytes []byte) (orderer.EtcdRaft, error) {
 			HeartbeatTick:        etcdRaftMetadata.Options.HeartbeatTick,
 			MaxInflightBlocks:    etcdRaftMetadata.Options.MaxInflightBlocks,
 			SnapshotIntervalSize: etcdRaftMetadata.Options.SnapshotIntervalSize,
+		},
+	}, nil
+}
+
+// unmarshalBdlsMetadata deserializes Bdls metadata.
+func unmarshalBdlsMetadata(mdBytes []byte) (orderer.Bdls, error) {
+	bdlsMetadata := &bb.ConfigMetadata{}
+	err := proto.Unmarshal(mdBytes, bdlsMetadata)
+	if err != nil {
+		return orderer.Bdls{}, fmt.Errorf("unmarshaling Bdls metadata: %v", err)
+	}
+
+	consenters := []orderer.Consenter{}
+
+	for _, c := range bdlsMetadata.Consenters {
+		clientTLSCertBlock, _ := pem.Decode(c.ClientTlsCert)
+		if clientTLSCertBlock == nil {
+			return orderer.Bdls{}, fmt.Errorf("no PEM data found in client TLS cert[% x]", c.ClientTlsCert)
+		}
+		clientTLSCert, err := x509.ParseCertificate(clientTLSCertBlock.Bytes)
+		if err != nil {
+			return orderer.Bdls{}, fmt.Errorf("unable to parse client tls cert: %v", err)
+		}
+		serverTLSCertBlock, _ := pem.Decode(c.ServerTlsCert)
+		if serverTLSCertBlock == nil {
+			return orderer.Bdls{}, fmt.Errorf("no PEM data found in server TLS cert[% x]", c.ServerTlsCert)
+		}
+		serverTLSCert, err := x509.ParseCertificate(serverTLSCertBlock.Bytes)
+		if err != nil {
+			return orderer.Bdls{}, fmt.Errorf("unable to parse server tls cert: %v", err)
+		}
+
+		consenter := orderer.Consenter{
+			Address: orderer.EtcdAddress{
+				Host: c.Host,
+				Port: int(c.Port),
+			},
+			ClientTLSCert: clientTLSCert,
+			ServerTLSCert: serverTLSCert,
+		}
+
+		consenters = append(consenters, consenter)
+	}
+
+	if bdlsMetadata.Options == nil {
+		return orderer.Bdls{}, errors.New("missing etcdraft metadata options in config")
+	}
+
+	return orderer.Bdls{
+		Consenters: consenters,
+		Options: orderer.BdlsOptions{
+			CurrentHeight: bdlsMetadata.Options.CurrentHeight,
 		},
 	}, nil
 }
