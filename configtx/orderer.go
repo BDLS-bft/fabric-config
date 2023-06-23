@@ -77,6 +77,11 @@ type EtcdRaftOptionsValue struct {
 	value *cb.ConfigValue
 }
 
+// BdlsOptionsValue encapsulates the configuration functions used to modify a Bdls configuration's options.
+type BdlsOptionsValue struct {
+	value *cb.ConfigValue
+}
+
 // BatchSizeValue encapsulates the configuration functions used to modify an orderer configuration's batch size values.
 type BatchSizeValue struct {
 	value *cb.ConfigValue
@@ -319,10 +324,38 @@ func (e *EtcdRaftOptionsValue) etcdRaftConfig(consensusTypeProto *ob.ConsensusTy
 	return unmarshalEtcdRaftMetadata(consensusTypeProto.Metadata)
 }
 
+// BdlsOptions returns an BdlsOptionsValue that can be used to configure a Bdls configuration's options.
+func (o *OrdererGroup) BdlsOptions() *BdlsOptionsValue {
+	return &BdlsOptionsValue{
+		value: o.ordererGroup.Values[orderer.ConsensusTypeKey],
+	}
+}
+
+func (e *BdlsOptionsValue) bdlsConfig(consensusTypeProto *ob.ConsensusType) (orderer.Bdls, error) {
+	err := proto.Unmarshal(e.value.Value, consensusTypeProto)
+	if err != nil {
+		return orderer.Bdls{}, err
+	}
+
+	return unmarshalBdlsMetadata(consensusTypeProto.Metadata)
+}
+
 func (e *EtcdRaftOptionsValue) setEtcdRaftConfig(consensusTypeProto *ob.ConsensusType, etcdRaft orderer.EtcdRaft) error {
 	consensusMetadata, err := marshalEtcdRaftMetadata(etcdRaft)
 	if err != nil {
 		return fmt.Errorf("marshaling etcdraft metadata: %v", err)
+	}
+
+	consensusTypeProto.Metadata = consensusMetadata
+
+	e.value.Value, err = proto.Marshal(consensusTypeProto)
+	return err
+}
+
+func (e *BdlsOptionsValue) setBdlsConfig(consensusTypeProto *ob.ConsensusType, bdls orderer.Bdls) error {
+	consensusMetadata, err := marshalBdlsMetadata(bdls)
+	if err != nil {
+		return fmt.Errorf("marshaling bdls metadata: %v", err)
 	}
 
 	consensusTypeProto.Metadata = consensusMetadata
@@ -341,6 +374,18 @@ func (e *EtcdRaftOptionsValue) SetTickInterval(interval string) error {
 
 	etcdRaft.Options.TickInterval = interval
 	return e.setEtcdRaftConfig(consensusTypeProto, etcdRaft)
+}
+
+// SetTickInterval sets the Etcdraft's tick interval.
+func (e *BdlsOptionsValue) SetCurrentHeight(interval uint64) error {
+	consensusTypeProto := &ob.ConsensusType{}
+	etcdRaft, err := e.bdlsConfig(consensusTypeProto)
+	if err != nil {
+		return nil
+	}
+
+	etcdRaft.Options.CurrentHeight = interval
+	return e.setBdlsConfig(consensusTypeProto, etcdRaft)
 }
 
 // SetElectionInterval sets the Etcdraft's election interval.
@@ -460,33 +505,56 @@ func (o *OrdererGroup) AddConsenter(consenter orderer.Consenter) error {
 		return err
 	}
 
-	if cfg.OrdererType != orderer.ConsensusTypeEtcdRaft {
-		return fmt.Errorf("consensus type %s is not etcdraft", cfg.OrdererType)
-	}
+	if cfg.OrdererType == orderer.ConsensusTypeEtcdRaft {
+		//	return fmt.Errorf("consensus type %s is not etcdraft", cfg.OrdererType)
+		//}
 
-	for _, c := range cfg.EtcdRaft.Consenters {
-		if reflect.DeepEqual(c, consenter) {
-			return nil
+		for _, c := range cfg.EtcdRaft.Consenters {
+			if reflect.DeepEqual(c, consenter) {
+				return nil
+			}
+		}
+
+		cfg.EtcdRaft.Consenters = append(cfg.EtcdRaft.Consenters, consenter)
+
+		consensusMetadata, err := marshalEtcdRaftMetadata(cfg.EtcdRaft)
+		if err != nil {
+			return fmt.Errorf("marshaling etcdraft metadata: %v", err)
+		}
+
+		consensusState, ok := ob.ConsensusType_State_value[string(cfg.State)]
+		if !ok {
+			return fmt.Errorf("unknown consensus state '%s'", cfg.State)
+		}
+
+		err = setValue(o.ordererGroup, consensusTypeValue(cfg.OrdererType, consensusMetadata, consensusState), AdminsPolicyKey)
+		if err != nil {
+			return err
+		}
+	} else if cfg.OrdererType == orderer.ConsensusTypeBdls {
+		for _, c := range cfg.Bdls.Consenters {
+			if reflect.DeepEqual(c, consenter) {
+				return nil
+			}
+		}
+
+		cfg.Bdls.Consenters = append(cfg.Bdls.Consenters, consenter)
+
+		consensusMetadata, err := marshalBdlsMetadata(cfg.Bdls)
+		if err != nil {
+			return fmt.Errorf("marshaling Bdls metadata: %v", err)
+		}
+
+		consensusState, ok := ob.ConsensusType_State_value[string(cfg.State)]
+		if !ok {
+			return fmt.Errorf("unknown consensus state '%s'", cfg.State)
+		}
+
+		err = setValue(o.ordererGroup, consensusTypeValue(cfg.OrdererType, consensusMetadata, consensusState), AdminsPolicyKey)
+		if err != nil {
+			return err
 		}
 	}
-
-	cfg.EtcdRaft.Consenters = append(cfg.EtcdRaft.Consenters, consenter)
-
-	consensusMetadata, err := marshalEtcdRaftMetadata(cfg.EtcdRaft)
-	if err != nil {
-		return fmt.Errorf("marshaling etcdraft metadata: %v", err)
-	}
-
-	consensusState, ok := ob.ConsensusType_State_value[string(cfg.State)]
-	if !ok {
-		return fmt.Errorf("unknown consensus state '%s'", cfg.State)
-	}
-
-	err = setValue(o.ordererGroup, consensusTypeValue(cfg.OrdererType, consensusMetadata, consensusState), AdminsPolicyKey)
-	if err != nil {
-		return err
-	}
-
 	return nil
 }
 
@@ -497,33 +565,59 @@ func (o *OrdererGroup) RemoveConsenter(consenter orderer.Consenter) error {
 		return err
 	}
 
-	if cfg.OrdererType != orderer.ConsensusTypeEtcdRaft {
-		return fmt.Errorf("consensus type %s is not etcdraft", cfg.OrdererType)
-	}
+	if cfg.OrdererType == orderer.ConsensusTypeEtcdRaft {
+		//return fmt.Errorf("consensus type %s is not etcdraft", cfg.OrdererType)
+		//}
 
-	consenters := cfg.EtcdRaft.Consenters[:]
-	for i, c := range cfg.EtcdRaft.Consenters {
-		if reflect.DeepEqual(c, consenter) {
-			consenters = append(consenters[:i], consenters[i+1:]...)
-			break
+		consenters := cfg.EtcdRaft.Consenters[:]
+		for i, c := range cfg.EtcdRaft.Consenters {
+			if reflect.DeepEqual(c, consenter) {
+				consenters = append(consenters[:i], consenters[i+1:]...)
+				break
+			}
 		}
-	}
 
-	cfg.EtcdRaft.Consenters = consenters
+		cfg.EtcdRaft.Consenters = consenters
 
-	consensusMetadata, err := marshalEtcdRaftMetadata(cfg.EtcdRaft)
-	if err != nil {
-		return fmt.Errorf("marshaling etcdraft metadata: %v", err)
-	}
+		consensusMetadata, err := marshalEtcdRaftMetadata(cfg.EtcdRaft)
+		if err != nil {
+			return fmt.Errorf("marshaling etcdraft metadata: %v", err)
+		}
 
-	consensusState, ok := ob.ConsensusType_State_value[string(cfg.State)]
-	if !ok {
-		return fmt.Errorf("unknown consensus state '%s'", cfg.State)
-	}
+		consensusState, ok := ob.ConsensusType_State_value[string(cfg.State)]
+		if !ok {
+			return fmt.Errorf("unknown consensus state '%s'", cfg.State)
+		}
 
-	err = setValue(o.ordererGroup, consensusTypeValue(cfg.OrdererType, consensusMetadata, consensusState), AdminsPolicyKey)
-	if err != nil {
-		return err
+		err = setValue(o.ordererGroup, consensusTypeValue(cfg.OrdererType, consensusMetadata, consensusState), AdminsPolicyKey)
+		if err != nil {
+			return err
+		}
+	} else if cfg.OrdererType == orderer.ConsensusTypeBdls {
+		consenters := cfg.Bdls.Consenters[:]
+		for i, c := range cfg.Bdls.Consenters {
+			if reflect.DeepEqual(c, consenter) {
+				consenters = append(consenters[:i], consenters[i+1:]...)
+				break
+			}
+		}
+
+		cfg.Bdls.Consenters = consenters
+
+		consensusMetadata, err := marshalBdlsMetadata(cfg.Bdls)
+		if err != nil {
+			return fmt.Errorf("marshaling Bdls metadata: %v", err)
+		}
+
+		consensusState, ok := ob.ConsensusType_State_value[string(cfg.State)]
+		if !ok {
+			return fmt.Errorf("unknown consensus state '%s'", cfg.State)
+		}
+
+		err = setValue(o.ordererGroup, consensusTypeValue(cfg.OrdererType, consensusMetadata, consensusState), AdminsPolicyKey)
+		if err != nil {
+			return err
+		}
 	}
 
 	return nil
@@ -844,6 +938,10 @@ func addOrdererValues(ordererGroup *cb.ConfigGroup, o Orderer) error {
 		if consensusMetadata, err = marshalEtcdRaftMetadata(o.EtcdRaft); err != nil {
 			return fmt.Errorf("marshaling etcdraft metadata for orderer type '%s': %v", orderer.ConsensusTypeEtcdRaft, err)
 		}
+	case orderer.ConsensusTypeBdls:
+		if consensusMetadata, err = marshalBdlsMetadata(o.Bdls); err != nil {
+			return fmt.Errorf("marshaling Bdls metadata for orderer type '%s': %v", orderer.ConsensusTypeBdls, err)
+		}
 	default:
 		return fmt.Errorf("unknown orderer type '%s'", o.OrdererType)
 	}
@@ -1044,7 +1142,7 @@ func marshalBdlsMetadata(md orderer.Bdls) ([]byte, error) {
 
 	data, err := proto.Marshal(configMetadata)
 	if err != nil {
-		return nil, fmt.Errorf("marshaling config metadata: %v", err)
+		return nil, fmt.Errorf("marshaling Bdls config metadata: %v", err)
 	}
 
 	return data, nil
@@ -1147,7 +1245,7 @@ func unmarshalBdlsMetadata(mdBytes []byte) (orderer.Bdls, error) {
 	}
 
 	if bdlsMetadata.Options == nil {
-		return orderer.Bdls{}, errors.New("missing etcdraft metadata options in config")
+		return orderer.Bdls{}, errors.New("missing Bdls metadata options in config")
 	}
 
 	return orderer.Bdls{
