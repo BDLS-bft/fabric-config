@@ -104,6 +104,7 @@ func (o *OrdererGroup) Organization(name string) *OrdererOrg {
 func (o *OrdererGroup) Configuration() (Orderer, error) {
 	// CONSENSUS TYPE, STATE, AND METADATA
 	var etcdRaft orderer.EtcdRaft
+	var bdls orderer.Bdls
 	kafkaBrokers := orderer.Kafka{}
 
 	consensusTypeProto := &ob.ConsensusType{}
@@ -134,6 +135,11 @@ func (o *OrdererGroup) Configuration() (Orderer, error) {
 		etcdRaft, err = unmarshalEtcdRaftMetadata(consensusTypeProto.Metadata)
 		if err != nil {
 			return Orderer{}, fmt.Errorf("unmarshaling etcd raft metadata: %v", err)
+		}
+	case orderer.ConsensusTypeBdls:
+		bdls, err = unmarshalBdlsMetadata(consensusTypeProto.Metadata)
+		if err != nil {
+			return Orderer{}, fmt.Errorf("unmarshaling bdls metadata: %v", err)
 		}
 	default:
 		return Orderer{}, fmt.Errorf("config contains unknown consensus type '%s'", consensusTypeProto.Type)
@@ -197,6 +203,7 @@ func (o *OrdererGroup) Configuration() (Orderer, error) {
 		},
 		Kafka:         kafkaBrokers,
 		EtcdRaft:      etcdRaft,
+		Bdls:          bdls,
 		Organizations: ordererOrgs,
 		MaxChannels:   channelRestrictions.MaxCount,
 		Capabilities:  capabilities,
@@ -273,6 +280,16 @@ func (o *OrdererGroup) SetEtcdRaftConsensusType(consensusMetadata orderer.EtcdRa
 	}
 
 	return setValue(o.ordererGroup, consensusTypeValue(orderer.ConsensusTypeEtcdRaft, consensusMetadataBytes, ob.ConsensusType_State_value[string(consensusState)]), AdminsPolicyKey)
+}
+
+// SetBdlsConsensusType sets the orderer consensus type to bdls, sets bdls metadata, and consensus state.
+func (o *OrdererGroup) SetBdlsConsensusType(consensusMetadata orderer.Bdls, consensusState orderer.ConsensusState) error {
+	consensusMetadataBytes, err := marshalBdlsMetadata(consensusMetadata)
+	if err != nil {
+		return fmt.Errorf("marshaling bdls metadata: %v", err)
+	}
+
+	return setValue(o.ordererGroup, consensusTypeValue(orderer.ConsensusTypeBdls, consensusMetadataBytes, ob.ConsensusType_State_value[string(consensusState)]), AdminsPolicyKey)
 }
 
 // SetConsensusState sets the consensus state.
