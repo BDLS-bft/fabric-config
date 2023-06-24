@@ -44,8 +44,6 @@ const (
 
 	// ChannelRestrictionsKey is the key name for the ChannelRestrictions message.
 	ChannelRestrictionsKey = "ChannelRestrictions"
-
-
 )
 
 // ConsensusState defines the orderer mode of operation.
@@ -76,12 +74,12 @@ type EtcdRaft struct {
 	Options    EtcdRaftOptions
 }
 
+// Bdls is serialized and set as the value of ConsensusType.Metadata in
+// a channel configuration when the ConsensusType.Type is set to "bdls".
 type Bdls struct {
 	Consenters []Consenter
 	Options    BdlsOptions
 }
-
-
 
 // EtcdRaftOptions to be specified for all the etcd/raft nodes.
 // These can be modified on a per-channel basis.
@@ -94,9 +92,10 @@ type EtcdRaftOptions struct {
 	SnapshotIntervalSize uint32
 }
 
-
+// BdlsOptions to be specified for all the Bdls nodes.
+// These can be modified on a per-channel basis.
 type BdlsOptions struct {
-	CurrentHeight      uint32
+	CurrentHeight uint64
 }
 
 // Consenter represents a consenting node (i.e. replica).

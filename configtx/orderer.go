@@ -39,7 +39,7 @@ type Orderer struct {
 	BatchSize     orderer.BatchSize
 	Kafka         orderer.Kafka
 	EtcdRaft      orderer.EtcdRaft
-	Bdls      	  orderer.Bdls
+	Bdls          orderer.Bdls
 	Organizations []Organization
 	// MaxChannels is the maximum count of channels an orderer supports.
 	MaxChannels uint64
@@ -77,6 +77,11 @@ type EtcdRaftOptionsValue struct {
 	value *cb.ConfigValue
 }
 
+// BdlsOptionsValue encapsulates the configuration functions used to modify a Bdls configuration's options.
+type BdlsOptionsValue struct {
+	value *cb.ConfigValue
+}
+
 // BatchSizeValue encapsulates the configuration functions used to modify an orderer configuration's batch size values.
 type BatchSizeValue struct {
 	value *cb.ConfigValue
@@ -104,6 +109,7 @@ func (o *OrdererGroup) Organization(name string) *OrdererOrg {
 func (o *OrdererGroup) Configuration() (Orderer, error) {
 	// CONSENSUS TYPE, STATE, AND METADATA
 	var etcdRaft orderer.EtcdRaft
+	var bdls orderer.Bdls
 	kafkaBrokers := orderer.Kafka{}
 
 	consensusTypeProto := &ob.ConsensusType{}
@@ -134,6 +140,11 @@ func (o *OrdererGroup) Configuration() (Orderer, error) {
 		etcdRaft, err = unmarshalEtcdRaftMetadata(consensusTypeProto.Metadata)
 		if err != nil {
 			return Orderer{}, fmt.Errorf("unmarshaling etcd raft metadata: %v", err)
+		}
+	case orderer.ConsensusTypeBdls:
+		bdls, err = unmarshalBdlsMetadata(consensusTypeProto.Metadata)
+		if err != nil {
+			return Orderer{}, fmt.Errorf("unmarshaling bdls metadata: %v", err)
 		}
 	default:
 		return Orderer{}, fmt.Errorf("config contains unknown consensus type '%s'", consensusTypeProto.Type)
@@ -197,6 +208,7 @@ func (o *OrdererGroup) Configuration() (Orderer, error) {
 		},
 		Kafka:         kafkaBrokers,
 		EtcdRaft:      etcdRaft,
+		Bdls:          bdls,
 		Organizations: ordererOrgs,
 		MaxChannels:   channelRestrictions.MaxCount,
 		Capabilities:  capabilities,
@@ -275,6 +287,16 @@ func (o *OrdererGroup) SetEtcdRaftConsensusType(consensusMetadata orderer.EtcdRa
 	return setValue(o.ordererGroup, consensusTypeValue(orderer.ConsensusTypeEtcdRaft, consensusMetadataBytes, ob.ConsensusType_State_value[string(consensusState)]), AdminsPolicyKey)
 }
 
+// SetBdlsConsensusType sets the orderer consensus type to bdls, sets bdls metadata, and consensus state.
+func (o *OrdererGroup) SetBdlsConsensusType(consensusMetadata orderer.Bdls, consensusState orderer.ConsensusState) error {
+	consensusMetadataBytes, err := marshalBdlsMetadata(consensusMetadata)
+	if err != nil {
+		return fmt.Errorf("marshaling bdls metadata: %v", err)
+	}
+
+	return setValue(o.ordererGroup, consensusTypeValue(orderer.ConsensusTypeBdls, consensusMetadataBytes, ob.ConsensusType_State_value[string(consensusState)]), AdminsPolicyKey)
+}
+
 // SetConsensusState sets the consensus state.
 func (o *OrdererGroup) SetConsensusState(consensusState orderer.ConsensusState) error {
 	consensusTypeProto := &ob.ConsensusType{}
@@ -302,10 +324,38 @@ func (e *EtcdRaftOptionsValue) etcdRaftConfig(consensusTypeProto *ob.ConsensusTy
 	return unmarshalEtcdRaftMetadata(consensusTypeProto.Metadata)
 }
 
+// BdlsOptions returns an BdlsOptionsValue that can be used to configure a Bdls configuration's options.
+func (o *OrdererGroup) BdlsOptions() *BdlsOptionsValue {
+	return &BdlsOptionsValue{
+		value: o.ordererGroup.Values[orderer.ConsensusTypeKey],
+	}
+}
+
+func (e *BdlsOptionsValue) bdlsConfig(consensusTypeProto *ob.ConsensusType) (orderer.Bdls, error) {
+	err := proto.Unmarshal(e.value.Value, consensusTypeProto)
+	if err != nil {
+		return orderer.Bdls{}, err
+	}
+
+	return unmarshalBdlsMetadata(consensusTypeProto.Metadata)
+}
+
 func (e *EtcdRaftOptionsValue) setEtcdRaftConfig(consensusTypeProto *ob.ConsensusType, etcdRaft orderer.EtcdRaft) error {
 	consensusMetadata, err := marshalEtcdRaftMetadata(etcdRaft)
 	if err != nil {
 		return fmt.Errorf("marshaling etcdraft metadata: %v", err)
+	}
+
+	consensusTypeProto.Metadata = consensusMetadata
+
+	e.value.Value, err = proto.Marshal(consensusTypeProto)
+	return err
+}
+
+func (e *BdlsOptionsValue) setBdlsConfig(consensusTypeProto *ob.ConsensusType, bdls orderer.Bdls) error {
+	consensusMetadata, err := marshalBdlsMetadata(bdls)
+	if err != nil {
+		return fmt.Errorf("marshaling bdls metadata: %v", err)
 	}
 
 	consensusTypeProto.Metadata = consensusMetadata
@@ -324,6 +374,18 @@ func (e *EtcdRaftOptionsValue) SetTickInterval(interval string) error {
 
 	etcdRaft.Options.TickInterval = interval
 	return e.setEtcdRaftConfig(consensusTypeProto, etcdRaft)
+}
+
+// SetTickInterval sets the Etcdraft's tick interval.
+func (e *BdlsOptionsValue) SetCurrentHeight(interval uint64) error {
+	consensusTypeProto := &ob.ConsensusType{}
+	etcdRaft, err := e.bdlsConfig(consensusTypeProto)
+	if err != nil {
+		return nil
+	}
+
+	etcdRaft.Options.CurrentHeight = interval
+	return e.setBdlsConfig(consensusTypeProto, etcdRaft)
 }
 
 // SetElectionInterval sets the Etcdraft's election interval.
@@ -443,33 +505,56 @@ func (o *OrdererGroup) AddConsenter(consenter orderer.Consenter) error {
 		return err
 	}
 
-	if cfg.OrdererType != orderer.ConsensusTypeEtcdRaft {
-		return fmt.Errorf("consensus type %s is not etcdraft", cfg.OrdererType)
-	}
+	if cfg.OrdererType == orderer.ConsensusTypeEtcdRaft {
+		//	return fmt.Errorf("consensus type %s is not etcdraft", cfg.OrdererType)
+		//}
 
-	for _, c := range cfg.EtcdRaft.Consenters {
-		if reflect.DeepEqual(c, consenter) {
-			return nil
+		for _, c := range cfg.EtcdRaft.Consenters {
+			if reflect.DeepEqual(c, consenter) {
+				return nil
+			}
+		}
+
+		cfg.EtcdRaft.Consenters = append(cfg.EtcdRaft.Consenters, consenter)
+
+		consensusMetadata, err := marshalEtcdRaftMetadata(cfg.EtcdRaft)
+		if err != nil {
+			return fmt.Errorf("marshaling etcdraft metadata: %v", err)
+		}
+
+		consensusState, ok := ob.ConsensusType_State_value[string(cfg.State)]
+		if !ok {
+			return fmt.Errorf("unknown consensus state '%s'", cfg.State)
+		}
+
+		err = setValue(o.ordererGroup, consensusTypeValue(cfg.OrdererType, consensusMetadata, consensusState), AdminsPolicyKey)
+		if err != nil {
+			return err
+		}
+	} else if cfg.OrdererType == orderer.ConsensusTypeBdls {
+		for _, c := range cfg.Bdls.Consenters {
+			if reflect.DeepEqual(c, consenter) {
+				return nil
+			}
+		}
+
+		cfg.Bdls.Consenters = append(cfg.Bdls.Consenters, consenter)
+
+		consensusMetadata, err := marshalBdlsMetadata(cfg.Bdls)
+		if err != nil {
+			return fmt.Errorf("marshaling Bdls metadata: %v", err)
+		}
+
+		consensusState, ok := ob.ConsensusType_State_value[string(cfg.State)]
+		if !ok {
+			return fmt.Errorf("unknown consensus state '%s'", cfg.State)
+		}
+
+		err = setValue(o.ordererGroup, consensusTypeValue(cfg.OrdererType, consensusMetadata, consensusState), AdminsPolicyKey)
+		if err != nil {
+			return err
 		}
 	}
-
-	cfg.EtcdRaft.Consenters = append(cfg.EtcdRaft.Consenters, consenter)
-
-	consensusMetadata, err := marshalEtcdRaftMetadata(cfg.EtcdRaft)
-	if err != nil {
-		return fmt.Errorf("marshaling etcdraft metadata: %v", err)
-	}
-
-	consensusState, ok := ob.ConsensusType_State_value[string(cfg.State)]
-	if !ok {
-		return fmt.Errorf("unknown consensus state '%s'", cfg.State)
-	}
-
-	err = setValue(o.ordererGroup, consensusTypeValue(cfg.OrdererType, consensusMetadata, consensusState), AdminsPolicyKey)
-	if err != nil {
-		return err
-	}
-
 	return nil
 }
 
@@ -480,33 +565,59 @@ func (o *OrdererGroup) RemoveConsenter(consenter orderer.Consenter) error {
 		return err
 	}
 
-	if cfg.OrdererType != orderer.ConsensusTypeEtcdRaft {
-		return fmt.Errorf("consensus type %s is not etcdraft", cfg.OrdererType)
-	}
+	if cfg.OrdererType == orderer.ConsensusTypeEtcdRaft {
+		//return fmt.Errorf("consensus type %s is not etcdraft", cfg.OrdererType)
+		//}
 
-	consenters := cfg.EtcdRaft.Consenters[:]
-	for i, c := range cfg.EtcdRaft.Consenters {
-		if reflect.DeepEqual(c, consenter) {
-			consenters = append(consenters[:i], consenters[i+1:]...)
-			break
+		consenters := cfg.EtcdRaft.Consenters[:]
+		for i, c := range cfg.EtcdRaft.Consenters {
+			if reflect.DeepEqual(c, consenter) {
+				consenters = append(consenters[:i], consenters[i+1:]...)
+				break
+			}
 		}
-	}
 
-	cfg.EtcdRaft.Consenters = consenters
+		cfg.EtcdRaft.Consenters = consenters
 
-	consensusMetadata, err := marshalEtcdRaftMetadata(cfg.EtcdRaft)
-	if err != nil {
-		return fmt.Errorf("marshaling etcdraft metadata: %v", err)
-	}
+		consensusMetadata, err := marshalEtcdRaftMetadata(cfg.EtcdRaft)
+		if err != nil {
+			return fmt.Errorf("marshaling etcdraft metadata: %v", err)
+		}
 
-	consensusState, ok := ob.ConsensusType_State_value[string(cfg.State)]
-	if !ok {
-		return fmt.Errorf("unknown consensus state '%s'", cfg.State)
-	}
+		consensusState, ok := ob.ConsensusType_State_value[string(cfg.State)]
+		if !ok {
+			return fmt.Errorf("unknown consensus state '%s'", cfg.State)
+		}
 
-	err = setValue(o.ordererGroup, consensusTypeValue(cfg.OrdererType, consensusMetadata, consensusState), AdminsPolicyKey)
-	if err != nil {
-		return err
+		err = setValue(o.ordererGroup, consensusTypeValue(cfg.OrdererType, consensusMetadata, consensusState), AdminsPolicyKey)
+		if err != nil {
+			return err
+		}
+	} else if cfg.OrdererType == orderer.ConsensusTypeBdls {
+		consenters := cfg.Bdls.Consenters[:]
+		for i, c := range cfg.Bdls.Consenters {
+			if reflect.DeepEqual(c, consenter) {
+				consenters = append(consenters[:i], consenters[i+1:]...)
+				break
+			}
+		}
+
+		cfg.Bdls.Consenters = consenters
+
+		consensusMetadata, err := marshalBdlsMetadata(cfg.Bdls)
+		if err != nil {
+			return fmt.Errorf("marshaling Bdls metadata: %v", err)
+		}
+
+		consensusState, ok := ob.ConsensusType_State_value[string(cfg.State)]
+		if !ok {
+			return fmt.Errorf("unknown consensus state '%s'", cfg.State)
+		}
+
+		err = setValue(o.ordererGroup, consensusTypeValue(cfg.OrdererType, consensusMetadata, consensusState), AdminsPolicyKey)
+		if err != nil {
+			return err
+		}
 	}
 
 	return nil
@@ -827,6 +938,10 @@ func addOrdererValues(ordererGroup *cb.ConfigGroup, o Orderer) error {
 		if consensusMetadata, err = marshalEtcdRaftMetadata(o.EtcdRaft); err != nil {
 			return fmt.Errorf("marshaling etcdraft metadata for orderer type '%s': %v", orderer.ConsensusTypeEtcdRaft, err)
 		}
+	case orderer.ConsensusTypeBdls:
+		if consensusMetadata, err = marshalBdlsMetadata(o.Bdls); err != nil {
+			return fmt.Errorf("marshaling Bdls metadata for orderer type '%s': %v", orderer.ConsensusTypeBdls, err)
+		}
 	default:
 		return fmt.Errorf("unknown orderer type '%s'", o.OrdererType)
 	}
@@ -982,6 +1097,57 @@ func marshalEtcdRaftMetadata(md orderer.EtcdRaft) ([]byte, error) {
 	return data, nil
 }
 
+// marshalBdlsMetadata serializes Bdls metadata.
+func marshalBdlsMetadata(md orderer.Bdls) ([]byte, error) {
+	var consenters []*bb.Consenter
+
+	if len(md.Consenters) == 0 {
+		return nil, errors.New("consenters are required")
+	}
+
+	for _, c := range md.Consenters {
+		host := c.Address.Host
+		port := c.Address.Port
+
+		if c.ClientTLSCert == nil {
+			return nil, fmt.Errorf("client tls cert for consenter %s:%d is required", host, port)
+		}
+
+		if c.ServerTLSCert == nil {
+			return nil, fmt.Errorf("server tls cert for consenter %s:%d is required", host, port)
+		}
+
+		consenter := &bb.Consenter{
+			Host: host,
+			Port: uint32(port),
+			ClientTlsCert: pem.EncodeToMemory(&pem.Block{
+				Type:  "CERTIFICATE",
+				Bytes: c.ClientTLSCert.Raw,
+			}),
+			ServerTlsCert: pem.EncodeToMemory(&pem.Block{
+				Type:  "CERTIFICATE",
+				Bytes: c.ServerTLSCert.Raw,
+			}),
+		}
+
+		consenters = append(consenters, consenter)
+	}
+
+	configMetadata := &bb.ConfigMetadata{
+		Consenters: consenters,
+		Options: &bb.Options{
+			CurrentHeight: uint64(md.Options.CurrentHeight),
+		},
+	}
+
+	data, err := proto.Marshal(configMetadata)
+	if err != nil {
+		return nil, fmt.Errorf("marshaling Bdls config metadata: %v", err)
+	}
+
+	return data, nil
+}
+
 // unmarshalEtcdRaftMetadata deserializes etcd RAFT metadata.
 func unmarshalEtcdRaftMetadata(mdBytes []byte) (orderer.EtcdRaft, error) {
 	etcdRaftMetadata := &eb.ConfigMetadata{}
@@ -1034,6 +1200,58 @@ func unmarshalEtcdRaftMetadata(mdBytes []byte) (orderer.EtcdRaft, error) {
 			HeartbeatTick:        etcdRaftMetadata.Options.HeartbeatTick,
 			MaxInflightBlocks:    etcdRaftMetadata.Options.MaxInflightBlocks,
 			SnapshotIntervalSize: etcdRaftMetadata.Options.SnapshotIntervalSize,
+		},
+	}, nil
+}
+
+// unmarshalBdlsMetadata deserializes Bdls metadata.
+func unmarshalBdlsMetadata(mdBytes []byte) (orderer.Bdls, error) {
+	bdlsMetadata := &bb.ConfigMetadata{}
+	err := proto.Unmarshal(mdBytes, bdlsMetadata)
+	if err != nil {
+		return orderer.Bdls{}, fmt.Errorf("unmarshaling Bdls metadata: %v", err)
+	}
+
+	consenters := []orderer.Consenter{}
+
+	for _, c := range bdlsMetadata.Consenters {
+		clientTLSCertBlock, _ := pem.Decode(c.ClientTlsCert)
+		if clientTLSCertBlock == nil {
+			return orderer.Bdls{}, fmt.Errorf("no PEM data found in client TLS cert[% x]", c.ClientTlsCert)
+		}
+		clientTLSCert, err := x509.ParseCertificate(clientTLSCertBlock.Bytes)
+		if err != nil {
+			return orderer.Bdls{}, fmt.Errorf("unable to parse client tls cert: %v", err)
+		}
+		serverTLSCertBlock, _ := pem.Decode(c.ServerTlsCert)
+		if serverTLSCertBlock == nil {
+			return orderer.Bdls{}, fmt.Errorf("no PEM data found in server TLS cert[% x]", c.ServerTlsCert)
+		}
+		serverTLSCert, err := x509.ParseCertificate(serverTLSCertBlock.Bytes)
+		if err != nil {
+			return orderer.Bdls{}, fmt.Errorf("unable to parse server tls cert: %v", err)
+		}
+
+		consenter := orderer.Consenter{
+			Address: orderer.EtcdAddress{
+				Host: c.Host,
+				Port: int(c.Port),
+			},
+			ClientTLSCert: clientTLSCert,
+			ServerTLSCert: serverTLSCert,
+		}
+
+		consenters = append(consenters, consenter)
+	}
+
+	if bdlsMetadata.Options == nil {
+		return orderer.Bdls{}, errors.New("missing Bdls metadata options in config")
+	}
+
+	return orderer.Bdls{
+		Consenters: consenters,
+		Options: orderer.BdlsOptions{
+			CurrentHeight: bdlsMetadata.Options.CurrentHeight,
 		},
 	}, nil
 }
